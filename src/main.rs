@@ -194,6 +194,7 @@ async fn main() -> Result<()> {
         None => {}
     }
 
+    set_panic_hook();
     match real_main(args).await {
         Ok(()) => {}
         Err(e) => tracing::error!("Process exit: {:?}", e),
@@ -209,3 +210,84 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Exit the whole process when panic.
+pub fn set_panic_hook() {
+    use std::{panic, process};
+
+    // HACK! New a backtrace ahead for caching necessary elf sections of this
+    // tikv-server, in case it can not open more files during panicking
+    // which leads to no stack info (0x5648bdfe4ff2 - <no info>).
+    //
+    // Crate backtrace caches debug info in a static variable `STATE`,
+    // and the `STATE` lives forever once it has been created.
+    // See more: https://github.com/alexcrichton/backtrace-rs/blob/\
+    //           597ad44b131132f17ed76bf94ac489274dd16c7f/\
+    //           src/symbolize/libbacktrace.rs#L126-L159
+    // Caching is slow, spawn it in another thread to speed up.
+    // thread::Builder::new()
+    //     .name(thd_name!("backtrace-loader"))
+    //     .spawn_wrapper(::backtrace::Backtrace::new)
+    //     .unwrap();
+
+    // let data_dir = data_dir.to_string();
+
+    panic::set_hook(Box::new(move |info: &panic::PanicInfo<'_>| {
+        // let msg = match info.payload().downcast_ref::<&'static str>() {
+        //     Some(s) => *s,
+        //     None => match info.payload().downcast_ref::<String>() {
+        //         Some(s) => &s[..],
+        //         None => "Box<Any>",
+        //     },
+        // };
+
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>");
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()));
+        let bt = std::backtrace::Backtrace::capture();
+        eprintln!(
+            "thread_name = {:?}, location = {:?}, backtrace = {:?}",
+            name,
+            loc.unwrap_or_else(|| "<unknown>".to_owned()),
+            format_args!("{:?}", bt),
+        );
+
+        // There might be remaining logs in the async logger.
+        // To collect remaining logs and also collect future logs, replace the old one
+        // with a terminal logger.
+        // When the old global async logger is replaced, the old async guard will be
+        // taken and dropped. In the drop() the async guard, it waits for the
+        // finish of the remaining logs in the async logger.
+        // if let Some(level) = ::log::max_level().to_level() {
+        //     let drainer = logger::text_format(logger::term_writer(), true);
+        //     let _ = logger::init_log(
+        //         drainer,
+        //         logger::convert_log_level_to_slog_level(level),
+        //         false, // Use sync logger to avoid an unnecessary log thread.
+        //         false, // It is initialized already.
+        //         vec![],
+        //         0,
+        //     );
+        // }
+
+        // If PANIC_MARK is true, create panic mark file.
+        // if panic_mark_is_on() {
+        //     create_panic_mark_file(data_dir.clone());
+        // }
+
+        process::abort();
+        // if panic_abort {
+        //     process::abort();
+        // } else {
+        //     unsafe {
+        //         // Calling process::exit would trigger global static to destroy, like C++
+        //         // static variables of RocksDB, which may cause other threads encounter
+        //         // pure virtual method call. So calling libc::_exit() instead to skip the
+        //         // cleanup process.
+        //         libc::_exit(1);
+        //     }
+        // }
+    }))
+}

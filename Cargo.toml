@@ -131,5 +131,15 @@ codegen-units = 1
 panic = 'abort'
 strip = true
 
+[profile.dev]
+opt-level = 0
+debug = true
+codegen-units = 16
+lto = false
+incremental = true
+debug-assertions = true
+overflow-checks = true
+rpath = false
+
 [[bin]]
 name = "rabbit-digger-pro"
